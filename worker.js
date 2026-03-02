@@ -8,7 +8,7 @@ let session;
 const IMAGE_SIZE = 256; 
 
 // Load the 256px model you just exported
-ort.InferenceSession.create('./ear_fpn_256.onnx', { 
+ort.InferenceSession.create('./ear_fpn_256_int8.onnx', { 
     executionProviders: ['wasm'],
     graphOptimizationLevel: 'all'
 })
