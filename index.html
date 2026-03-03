@@ -1,294 +1,1093 @@
 <!DOCTYPE html>
 <html lang="en">
 <head>
-    <meta charset="UTF-8">
-    <meta name="viewport" content="width=device-width, initial-scale=1.0, maximum-scale=1.0, user-scalable=no">
-    <title>Earring AR - Precision Tracking</title>
-    <style>
-        body { 
-            font-family: 'Segoe UI', Tahoma, Geneva, Verdana, sans-serif; 
-            text-align: center; 
-            background: #121212; 
-            color: #e0e0e0; 
-            margin: 0;
-            padding: 0;
-            display: flex;
-            flex-direction: column;
-            align-items: center;
-            justify-content: center;
-            height: 100vh;
-            overflow: hidden;
-        }
-        #container { 
-            position: relative; 
-            width: 100%; 
-            max-width: 640px; 
-            display: flex;
-            justify-content: center;
-        }
-        video { display: none; } 
-        canvas { 
-            width: 100%; 
-            height: auto; 
-            box-shadow: 0px 10px 30px rgba(0,0,0,0.7);
-        }
-        .ui-panel {
-            position: absolute;
-            top: 15px;
-            left: 15px;
-            text-align: left;
-            pointer-events: none;
-            z-index: 10;
-        }
-        #status { 
-            font-size: 1em;
-            color: #00ff88; 
-            background: rgba(0,0,0,0.7);
-            padding: 6px 12px;
-            border-radius: 4px;
-            text-transform: uppercase;
-            font-weight: bold;
-            display: inline-block;
-            margin-bottom: 5px;
-        }
-        .fps-counter {
-            background: rgba(0,0,0,0.7);
-            padding: 6px 12px;
-            border-radius: 4px;
-            font-size: 0.9em;
-        }
-    </style>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<title>Dual AI: Ear + Background</title>
+
+<script src="https://cdn.jsdelivr.net/npm/@mediapipe/selfie_segmentation/selfie_segmentation.js"></script>
+
+<style>
+body {
+    margin: 0;
+    background: #111;
+    display: flex;
+    justify-content: center;
+    align-items: center;
+    height: 100vh;
+    font-family: sans-serif;
+}
+
+#container {
+    position: relative;
+    width: 100%;
+    max-width: 640px;
+}
+
+video { display: none; }
+
+canvas {
+    width: 100%;
+    height: auto;
+    border-radius: 10px;
+    box-shadow: 0 10px 30px rgba(0,0,0,0.6);
+}
+
+#panel {
+    position: absolute;
+    top: 10px;
+    left: 10px;
+    z-index: 10;
+    display: flex;
+    flex-direction: column;
+    gap: 8px;
+}
+
+#status {
+    background: rgba(0,0,0,0.7);
+    color: #00ff88;
+    padding: 6px 10px;
+    border-radius: 4px;
+    font-size: 13px;
+    font-weight: bold;
+}
+
+.controls {
+    background: rgba(0,0,0,0.7);
+    padding: 8px;
+    border-radius: 4px;
+    color: white;
+    font-size: 13px;
+}
+
+select, input[type="file"] {
+    background: #333;
+    color: white;
+    border: 1px solid #555;
+    padding: 4px;
+    border-radius: 4px;
+}
+</style>
 </head>
+
 <body>
 
-    <div id="container">
-        <div class="ui-panel">
-            <div id="status">Booting AI Worker...</div>
-            <div class="fps-counter">
-                <div id="videoFps" style="color: #00ff88;">Cam: 0 FPS</div>
-                <div id="aiFps" style="color: #ffaa00;">AI: 0 FPS</div>
+<div id="container">
+
+    <div id="panel">
+        <div id="status">Loading AI...</div>
+
+        <div class="controls">
+            <label>Background:</label>
+            <select id="bgMode">
+                <option value="none">Normal</option>
+                <option value="blur">Blur</option>
+                <option value="image">Custom Image</option>
+            </select>
+
+            <div id="fileBox" style="display:none; margin-top:6px;">
+                <input type="file" id="bgImageInput" accept="image/*">
             </div>
         </div>
-
-        <video id="video" autoplay playsinline></video>
-        <canvas id="outputCanvas"></canvas>
     </div>
-    
-    <canvas id="processCanvas" width="256" height="256" style="display:none;"></canvas>
 
-    <script>
-        const IMAGE_SIZE = 256; 
-        const SNAP_SPEED = 0.35; 
-        
-        let video = document.getElementById('video');
-        let outputCanvas = document.getElementById('outputCanvas');
-        let ctx = outputCanvas.getContext('2d', { willReadFrequently: true });
-        let processCanvas = document.getElementById('processCanvas');
-        let pCtx = processCanvas.getContext('2d', { willReadFrequently: true });
-        
-        let isRunning = false;
-        let isAiBusy = false; 
-        
-        let targetAnchors = [];      
-        let currentAnchors = [];     
-        
-        let lastVideoTime = performance.now();
-        let lastAiTime = performance.now();
+    <video id="video" autoplay playsinline></video>
+    <canvas id="outputCanvas"></canvas>
 
-        const aiWorker = new Worker('worker.js');
+</div>
 
-        aiWorker.onmessage = (e) => {
-            const msg = e.data;
-            if (msg.type === 'ready') {
-                document.getElementById('status').innerText = "TRACKING ACTIVE";
-                startWebcam();
-            } 
-            else if (msg.type === 'result') {
-                const now = performance.now();
-                document.getElementById('aiFps').innerText = `AI: ${(1000 / (now - lastAiTime)).toFixed(1)} FPS`;
-                lastAiTime = now;
+<canvas id="processCanvas" width="256" height="256" style="display:none;"></canvas>
 
-                targetAnchors = parseFpnOutput(msg.outputData, IMAGE_SIZE);
-                isAiBusy = false; 
-            } 
-            else if (msg.type === 'error') {
-                console.error("AI Error:", msg.message);
-                document.getElementById('status').style.color = "#ff4444";
-                document.getElementById('status').innerText = "AI ERROR";
-            }
+<script>
+
+const IMAGE_SIZE = 256;
+
+const video = document.getElementById("video");
+const canvas = document.getElementById("outputCanvas");
+const ctx = canvas.getContext("2d");
+
+const processCanvas = document.getElementById("processCanvas");
+const pCtx = processCanvas.getContext("2d");
+
+const bgModeSelect = document.getElementById("bgMode");
+const bgImageInput = document.getElementById("bgImageInput");
+const fileBox = document.getElementById("fileBox");
+
+let currentBgMode = "none";
+let customBgImage = null;
+
+bgModeSelect.addEventListener("change", e => {
+    currentBgMode = e.target.value;
+    fileBox.style.display = currentBgMode === "image" ? "block" : "none";
+});
+
+bgImageInput.addEventListener("change", e => {
+    const file = e.target.files[0];
+    if (!file) return;
+    const url = URL.createObjectURL(file);
+    customBgImage = new Image();
+    customBgImage.src = url;
+});
+
+/* =========================
+   AI STATE
+========================= */
+
+let isRunning = false;
+let isEarBusy = false;
+let isBodyBusy = false;
+
+let lastEarOutput = null;
+let lastBodyMask = null;
+
+let readyCount = 0;
+function checkReady() {
+    readyCount++;
+    if (readyCount === 2) {
+        document.getElementById("status").innerText = "AI Ready";
+        startCamera();
+    }
+}
+
+/* =========================
+   ONNX WORKER
+========================= */
+
+const worker = new Worker("worker.js");
+
+worker.onmessage = e => {
+    const msg = e.data;
+
+    if (msg.type === "ready") {
+        checkReady();
+    }
+    else if (msg.type === "result") {
+        lastEarOutput = msg.outputData;
+        isEarBusy = false;
+    }
+    else if (msg.type === "error") {
+        console.error(msg.message);
+    }
+};
+
+/* =========================
+   MEDIAPIPE
+========================= */
+
+const selfieSegmentation = new SelfieSegmentation({
+    locateFile: file =>
+        `https://cdn.jsdelivr.net/npm/@mediapipe/selfie_segmentation/${file}`
+});
+
+selfieSegmentation.setOptions({ modelSelection: 1 });
+
+const bodyMaskCanvas = document.createElement("canvas");
+const bodyMaskCtx = bodyMaskCanvas.getContext("2d");
+
+selfieSegmentation.onResults(results => {
+
+    bodyMaskCanvas.width = results.segmentationMask.width;
+    bodyMaskCanvas.height = results.segmentationMask.height;
+
+    bodyMaskCtx.clearRect(0,0,bodyMaskCanvas.width,bodyMaskCanvas.height);
+    bodyMaskCtx.drawImage(results.segmentationMask,0,0);
+
+    lastBodyMask = bodyMaskCanvas;
+    isBodyBusy = false;
+});
+
+checkReady();
+
+/* =========================
+   START CAMERA
+========================= */
+
+function startCamera() {
+    navigator.mediaDevices.getUserMedia({
+        video: { facingMode: "user", width: { ideal: 640 }, height: { ideal: 480 } },
+        audio: false
+    }).then(stream => {
+        video.srcObject = stream;
+        video.onloadedmetadata = () => {
+            canvas.width = video.videoWidth;
+            canvas.height = video.videoHeight;
+            isRunning = true;
+            requestAnimationFrame(renderLoop);
         };
+    });
+}
 
-        function startWebcam() {
-            // facingMode: "user" requests the front camera on mobile devices
-            navigator.mediaDevices.getUserMedia({ 
-                video: { width: { ideal: 640 }, height: { ideal: 480 }, facingMode: "user" }, 
-                audio: false 
-            })
-            .then(stream => {
-                video.srcObject = stream;
-                video.onloadedmetadata = () => {
-                    outputCanvas.width = video.videoWidth;
-                    outputCanvas.height = video.videoHeight;
-                    isRunning = true;
-                    requestAnimationFrame(drawVideoLoop);
-                };
-            })
-            .catch(err => {
-                document.getElementById('status').innerText = "CAMERA DENIED";
-                document.getElementById('status').style.color = "#ff4444";
-            });
+/* =========================
+   PREPROCESS (ONNX)
+========================= */
+
+function preprocess(imageData) {
+
+    const floatData = new Float32Array(3 * IMAGE_SIZE * IMAGE_SIZE);
+
+    const mean = [0.485,0.456,0.406];
+    const std = [0.229,0.224,0.225];
+
+    for (let i=0;i<IMAGE_SIZE*IMAGE_SIZE;i++) {
+
+        const r = imageData[i*4]/255;
+        const g = imageData[i*4+1]/255;
+        const b = imageData[i*4+2]/255;
+
+        floatData[i] = (r-mean[0])/std[0];
+        floatData[IMAGE_SIZE*IMAGE_SIZE+i] = (g-mean[1])/std[1];
+        floatData[2*IMAGE_SIZE*IMAGE_SIZE+i] = (b-mean[2])/std[2];
+    }
+
+    return floatData;
+}
+
+/* =========================
+   TRIGGER AIs
+========================= */
+
+function triggerAI() {
+
+    const w = video.videoWidth;
+    const h = video.videoHeight;
+
+    if (!isEarBusy) {
+        isEarBusy = true;
+
+        const minDim = Math.min(w,h);
+        const startX = (w-minDim)/2;
+        const startY = (h-minDim)/2;
+
+        pCtx.drawImage(video,startX,startY,minDim,minDim,0,0,IMAGE_SIZE,IMAGE_SIZE);
+
+        const imgData = pCtx.getImageData(0,0,IMAGE_SIZE,IMAGE_SIZE).data;
+        const tensorData = preprocess(imgData);
+
+        worker.postMessage({type:"predict",tensorData:tensorData},[tensorData.buffer]);
+    }
+
+    if (!isBodyBusy && currentBgMode !== "none") {
+        isBodyBusy = true;
+        selfieSegmentation.send({image:video});
+    }
+}
+
+/* =========================
+   DRAW EAR MASK
+========================= */
+
+function drawEarMask(data,w,h) {
+
+    const minDim = Math.min(w,h);
+    const startX = (w-minDim)/2;
+    const startY = (h-minDim)/2;
+
+    const maskCanvas = document.createElement("canvas");
+    maskCanvas.width = IMAGE_SIZE;
+    maskCanvas.height = IMAGE_SIZE;
+
+    const maskCtx = maskCanvas.getContext("2d");
+    const img = maskCtx.createImageData(IMAGE_SIZE,IMAGE_SIZE);
+    const px = img.data;
+
+    for (let i=0;i<IMAGE_SIZE*IMAGE_SIZE;i++) {
+
+        const ear = data[IMAGE_SIZE*IMAGE_SIZE+i] > data[i];
+
+        if (ear) {
+            px[i*4]=0;
+            px[i*4+1]=255;
+            px[i*4+2]=0;
+            px[i*4+3]=160;
+        }
+    }
+
+    maskCtx.putImageData(img,0,0);
+
+    ctx.drawImage(maskCanvas,-w+startX,startY,minDim,minDim);
+}
+
+/* =========================
+   MAIN LOOP
+========================= */
+
+function renderLoop() {
+
+    if (!isRunning) return;
+
+    const w = video.videoWidth;
+    const h = video.videoHeight;
+
+    ctx.save();
+    ctx.scale(-1, 1);
+
+    if (currentBgMode === "none" || !lastBodyMask) {
+        ctx.drawImage(video, -w, 0, w, h);
+    } else {
+
+        // ---------- STEP 1: Draw background ----------
+        if (currentBgMode === "blur") {
+            ctx.filter = "blur(25px)";
+            ctx.drawImage(video, -w, 0, w, h);
+            ctx.filter = "none";
+        } 
+        else if (currentBgMode === "image" && customBgImage) {
+            ctx.drawImage(customBgImage, -w, 0, w, h);
+        } 
+        else {
+            ctx.drawImage(video, -w, 0, w, h);
         }
 
-        function sendNextFrameToWorker() {
-            isAiBusy = true; 
+        // ---------- STEP 2: Keep only background ----------
+        ctx.globalCompositeOperation = "destination-out";
+        ctx.drawImage(lastBodyMask, -w, 0, w, h);
 
-            const w = video.videoWidth;
-            const h = video.videoHeight;
-            const minDim = Math.min(w, h);
-            const startX = (w - minDim) / 2;
-            const startY = (h - minDim) / 2;
+        // ---------- STEP 3: Draw person ----------
+        ctx.globalCompositeOperation = "destination-over";
+        ctx.drawImage(video, -w, 0, w, h);
 
-            pCtx.drawImage(video, startX, startY, minDim, minDim, 0, 0, IMAGE_SIZE, IMAGE_SIZE);
-            
-            const imageData = pCtx.getImageData(0, 0, IMAGE_SIZE, IMAGE_SIZE).data;
-            const float32Data = new Float32Array(3 * IMAGE_SIZE * IMAGE_SIZE);
-            
-            const mean = [0.485, 0.456, 0.406];
-            const std = [0.229, 0.224, 0.225];
+        ctx.globalCompositeOperation = "source-over";
+    }
 
-            for (let i = 0; i < IMAGE_SIZE * IMAGE_SIZE; i++) {
-                float32Data[i] = ((imageData[i * 4] / 255.0) - mean[0]) / std[0]; 
-                float32Data[IMAGE_SIZE * IMAGE_SIZE + i] = ((imageData[i * 4 + 1] / 255.0) - mean[1]) / std[1]; 
-                float32Data[2 * IMAGE_SIZE * IMAGE_SIZE + i] = ((imageData[i * 4 + 2] / 255.0) - mean[2]) / std[2]; 
-            }
+    if (lastEarOutput) {
+        drawEarMask(lastEarOutput, w, h);
+    }
 
-            aiWorker.postMessage({ type: 'predict', tensorData: float32Data }, [float32Data.buffer]);
+    ctx.restore();
+
+    triggerAI();
+    requestAnimationFrame(renderLoop);
+}
+
+
+</script>
+</body>
+</html><!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<title>Dual AI: Ear + Background</title>
+
+<script src="https://cdn.jsdelivr.net/npm/@mediapipe/selfie_segmentation/selfie_segmentation.js"></script>
+
+<style>
+body {
+    margin: 0;
+    background: #111;
+    display: flex;
+    justify-content: center;
+    align-items: center;
+    height: 100vh;
+    font-family: sans-serif;
+}
+
+#container {
+    position: relative;
+    width: 100%;
+    max-width: 640px;
+}
+
+video { display: none; }
+
+canvas {
+    width: 100%;
+    height: auto;
+    border-radius: 10px;
+    box-shadow: 0 10px 30px rgba(0,0,0,0.6);
+}
+
+#panel {
+    position: absolute;
+    top: 10px;
+    left: 10px;
+    z-index: 10;
+    display: flex;
+    flex-direction: column;
+    gap: 8px;
+}
+
+#status {
+    background: rgba(0,0,0,0.7);
+    color: #00ff88;
+    padding: 6px 10px;
+    border-radius: 4px;
+    font-size: 13px;
+    font-weight: bold;
+}
+
+.controls {
+    background: rgba(0,0,0,0.7);
+    padding: 8px;
+    border-radius: 4px;
+    color: white;
+    font-size: 13px;
+}
+
+select, input[type="file"] {
+    background: #333;
+    color: white;
+    border: 1px solid #555;
+    padding: 4px;
+    border-radius: 4px;
+}
+</style>
+</head>
+
+<body>
+
+<div id="container">
+
+    <div id="panel">
+        <div id="status">Loading AI...</div>
+
+        <div class="controls">
+            <label>Background:</label>
+            <select id="bgMode">
+                <option value="none">Normal</option>
+                <option value="blur">Blur</option>
+                <option value="image">Custom Image</option>
+            </select>
+
+            <div id="fileBox" style="display:none; margin-top:6px;">
+                <input type="file" id="bgImageInput" accept="image/*">
+            </div>
+        </div>
+    </div>
+
+    <video id="video" autoplay playsinline></video>
+    <canvas id="outputCanvas"></canvas>
+
+</div>
+
+<canvas id="processCanvas" width="256" height="256" style="display:none;"></canvas>
+
+<script>
+
+const IMAGE_SIZE = 256;
+
+const video = document.getElementById("video");
+const canvas = document.getElementById("outputCanvas");
+const ctx = canvas.getContext("2d");
+
+const processCanvas = document.getElementById("processCanvas");
+const pCtx = processCanvas.getContext("2d");
+
+const bgModeSelect = document.getElementById("bgMode");
+const bgImageInput = document.getElementById("bgImageInput");
+const fileBox = document.getElementById("fileBox");
+
+let currentBgMode = "none";
+let customBgImage = null;
+
+bgModeSelect.addEventListener("change", e => {
+    currentBgMode = e.target.value;
+    fileBox.style.display = currentBgMode === "image" ? "block" : "none";
+});
+
+bgImageInput.addEventListener("change", e => {
+    const file = e.target.files[0];
+    if (!file) return;
+    const url = URL.createObjectURL(file);
+    customBgImage = new Image();
+    customBgImage.src = url;
+});
+
+/* =========================
+   AI STATE
+========================= */
+
+let isRunning = false;
+let isEarBusy = false;
+let isBodyBusy = false;
+
+let lastEarOutput = null;
+let lastBodyMask = null;
+
+let readyCount = 0;
+function checkReady() {
+    readyCount++;
+    if (readyCount === 2) {
+        document.getElementById("status").innerText = "AI Ready";
+        startCamera();
+    }
+}
+
+/* =========================
+   ONNX WORKER
+========================= */
+
+const worker = new Worker("worker.js");
+
+worker.onmessage = e => {
+    const msg = e.data;
+
+    if (msg.type === "ready") {
+        checkReady();
+    }
+    else if (msg.type === "result") {
+        lastEarOutput = msg.outputData;
+        isEarBusy = false;
+    }
+    else if (msg.type === "error") {
+        console.error(msg.message);
+    }
+};
+
+/* =========================
+   MEDIAPIPE
+========================= */
+
+const selfieSegmentation = new SelfieSegmentation({
+    locateFile: file =>
+        `https://cdn.jsdelivr.net/npm/@mediapipe/selfie_segmentation/${file}`
+});
+
+selfieSegmentation.setOptions({ modelSelection: 1 });
+
+const bodyMaskCanvas = document.createElement("canvas");
+const bodyMaskCtx = bodyMaskCanvas.getContext("2d");
+
+selfieSegmentation.onResults(results => {
+
+    bodyMaskCanvas.width = results.segmentationMask.width;
+    bodyMaskCanvas.height = results.segmentationMask.height;
+
+    bodyMaskCtx.clearRect(0,0,bodyMaskCanvas.width,bodyMaskCanvas.height);
+    bodyMaskCtx.drawImage(results.segmentationMask,0,0);
+
+    lastBodyMask = bodyMaskCanvas;
+    isBodyBusy = false;
+});
+
+checkReady();
+
+/* =========================
+   START CAMERA
+========================= */
+
+function startCamera() {
+    navigator.mediaDevices.getUserMedia({
+        video: { facingMode: "user", width: { ideal: 640 }, height: { ideal: 480 } },
+        audio: false
+    }).then(stream => {
+        video.srcObject = stream;
+        video.onloadedmetadata = () => {
+            canvas.width = video.videoWidth;
+            canvas.height = video.videoHeight;
+            isRunning = true;
+            requestAnimationFrame(renderLoop);
+        };
+    });
+}
+
+/* =========================
+   PREPROCESS (ONNX)
+========================= */
+
+function preprocess(imageData) {
+
+    const floatData = new Float32Array(3 * IMAGE_SIZE * IMAGE_SIZE);
+
+    const mean = [0.485,0.456,0.406];
+    const std = [0.229,0.224,0.225];
+
+    for (let i=0;i<IMAGE_SIZE*IMAGE_SIZE;i++) {
+
+        const r = imageData[i*4]/255;
+        const g = imageData[i*4+1]/255;
+        const b = imageData[i*4+2]/255;
+
+        floatData[i] = (r-mean[0])/std[0];
+        floatData[IMAGE_SIZE*IMAGE_SIZE+i] = (g-mean[1])/std[1];
+        floatData[2*IMAGE_SIZE*IMAGE_SIZE+i] = (b-mean[2])/std[2];
+    }
+
+    return floatData;
+}
+
+/* =========================
+   TRIGGER AIs
+========================= */
+
+function triggerAI() {
+
+    const w = video.videoWidth;
+    const h = video.videoHeight;
+
+    if (!isEarBusy) {
+        isEarBusy = true;
+
+        const minDim = Math.min(w,h);
+        const startX = (w-minDim)/2;
+        const startY = (h-minDim)/2;
+
+        pCtx.drawImage(video,startX,startY,minDim,minDim,0,0,IMAGE_SIZE,IMAGE_SIZE);
+
+        const imgData = pCtx.getImageData(0,0,IMAGE_SIZE,IMAGE_SIZE).data;
+        const tensorData = preprocess(imgData);
+
+        worker.postMessage({type:"predict",tensorData:tensorData},[tensorData.buffer]);
+    }
+
+    if (!isBodyBusy && currentBgMode !== "none") {
+        isBodyBusy = true;
+        selfieSegmentation.send({image:video});
+    }
+}
+
+/* =========================
+   DRAW EAR MASK
+========================= */
+
+function drawEarMask(data,w,h) {
+
+    const minDim = Math.min(w,h);
+    const startX = (w-minDim)/2;
+    const startY = (h-minDim)/2;
+
+    const maskCanvas = document.createElement("canvas");
+    maskCanvas.width = IMAGE_SIZE;
+    maskCanvas.height = IMAGE_SIZE;
+
+    const maskCtx = maskCanvas.getContext("2d");
+    const img = maskCtx.createImageData(IMAGE_SIZE,IMAGE_SIZE);
+    const px = img.data;
+
+    for (let i=0;i<IMAGE_SIZE*IMAGE_SIZE;i++) {
+
+        const ear = data[IMAGE_SIZE*IMAGE_SIZE+i] > data[i];
+
+        if (ear) {
+            px[i*4]=0;
+            px[i*4+1]=255;
+            px[i*4+2]=0;
+            px[i*4+3]=160;
+        }
+    }
+
+    maskCtx.putImageData(img,0,0);
+
+    ctx.drawImage(maskCanvas,-w+startX,startY,minDim,minDim);
+}
+
+/* =========================
+   MAIN LOOP
+========================= */
+
+function renderLoop() {
+
+    if (!isRunning) return;
+
+    const w = video.videoWidth;
+    const h = video.videoHeight;
+
+    ctx.save();
+    ctx.scale(-1, 1);
+
+    if (currentBgMode === "none" || !lastBodyMask) {
+        ctx.drawImage(video, -w, 0, w, h);
+    } else {
+
+        // ---------- STEP 1: Draw background ----------
+        if (currentBgMode === "blur") {
+            ctx.filter = "blur(25px)";
+            ctx.drawImage(video, -w, 0, w, h);
+            ctx.filter = "none";
+        } 
+        else if (currentBgMode === "image" && customBgImage) {
+            ctx.drawImage(customBgImage, -w, 0, w, h);
+        } 
+        else {
+            ctx.drawImage(video, -w, 0, w, h);
         }
 
-        function drawVideoLoop() {
-            if (!isRunning) return;
+        // ---------- STEP 2: Keep only background ----------
+        ctx.globalCompositeOperation = "destination-out";
+        ctx.drawImage(lastBodyMask, -w, 0, w, h);
 
-            const now = performance.now();
-            document.getElementById('videoFps').innerText = `Cam: ${(1000 / (now - lastVideoTime)).toFixed(1)} FPS`;
-            lastVideoTime = now;
+        // ---------- STEP 3: Draw person ----------
+        ctx.globalCompositeOperation = "destination-over";
+        ctx.drawImage(video, -w, 0, w, h);
 
-            const w = video.videoWidth;
-            const h = video.videoHeight;
+        ctx.globalCompositeOperation = "source-over";
+    }
 
-            ctx.drawImage(video, 0, 0, w, h);
+    if (lastEarOutput) {
+        drawEarMask(lastEarOutput, w, h);
+    }
 
-            if (currentAnchors.length !== targetAnchors.length) {
-                currentAnchors = targetAnchors.map(a => ({...a}));
-            } else {
-                for(let i=0; i<targetAnchors.length; i++) {
-                    currentAnchors[i].x += (targetAnchors[i].x - currentAnchors[i].x) * SNAP_SPEED;
-                    currentAnchors[i].y += (targetAnchors[i].y - currentAnchors[i].y) * SNAP_SPEED;
-                }
-            }
+    ctx.restore();
 
-            const minDim = Math.min(w, h);
-            const startX = (w - minDim) / 2;
-            const startY = (h - minDim) / 2;
-            const scale = minDim / IMAGE_SIZE;
+    triggerAI();
+    requestAnimationFrame(renderLoop);
+}
 
-            // Draw the tracking dots
-            currentAnchors.forEach(anchor => {
-                const finalX = startX + (anchor.x * scale);
-                const finalY = startY + (anchor.y * scale);
 
-                ctx.beginPath();
-                ctx.arc(finalX, finalY, 6, 0, 2 * Math.PI); 
-                ctx.fillStyle = '#00ff88'; 
-                ctx.fill();
-                ctx.lineWidth = 2;
-                ctx.strokeStyle = '#ffffff'; 
-                ctx.stroke();
-            });
+</script>
+</body>
+</html><!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<title>Dual AI: Ear + Background</title>
 
-            if (!isAiBusy) sendNextFrameToWorker();
-            requestAnimationFrame(drawVideoLoop); 
+<script src="https://cdn.jsdelivr.net/npm/@mediapipe/selfie_segmentation/selfie_segmentation.js"></script>
+
+<style>
+body {
+    margin: 0;
+    background: #111;
+    display: flex;
+    justify-content: center;
+    align-items: center;
+    height: 100vh;
+    font-family: sans-serif;
+}
+
+#container {
+    position: relative;
+    width: 100%;
+    max-width: 640px;
+}
+
+video { display: none; }
+
+canvas {
+    width: 100%;
+    height: auto;
+    border-radius: 10px;
+    box-shadow: 0 10px 30px rgba(0,0,0,0.6);
+}
+
+#panel {
+    position: absolute;
+    top: 10px;
+    left: 10px;
+    z-index: 10;
+    display: flex;
+    flex-direction: column;
+    gap: 8px;
+}
+
+#status {
+    background: rgba(0,0,0,0.7);
+    color: #00ff88;
+    padding: 6px 10px;
+    border-radius: 4px;
+    font-size: 13px;
+    font-weight: bold;
+}
+
+.controls {
+    background: rgba(0,0,0,0.7);
+    padding: 8px;
+    border-radius: 4px;
+    color: white;
+    font-size: 13px;
+}
+
+select, input[type="file"] {
+    background: #333;
+    color: white;
+    border: 1px solid #555;
+    padding: 4px;
+    border-radius: 4px;
+}
+</style>
+</head>
+
+<body>
+
+<div id="container">
+
+    <div id="panel">
+        <div id="status">Loading AI...</div>
+
+        <div class="controls">
+            <label>Background:</label>
+            <select id="bgMode">
+                <option value="none">Normal</option>
+                <option value="blur">Blur</option>
+                <option value="image">Custom Image</option>
+            </select>
+
+            <div id="fileBox" style="display:none; margin-top:6px;">
+                <input type="file" id="bgImageInput" accept="image/*">
+            </div>
+        </div>
+    </div>
+
+    <video id="video" autoplay playsinline></video>
+    <canvas id="outputCanvas"></canvas>
+
+</div>
+
+<canvas id="processCanvas" width="256" height="256" style="display:none;"></canvas>
+
+<script>
+
+const IMAGE_SIZE = 256;
+
+const video = document.getElementById("video");
+const canvas = document.getElementById("outputCanvas");
+const ctx = canvas.getContext("2d");
+
+const processCanvas = document.getElementById("processCanvas");
+const pCtx = processCanvas.getContext("2d");
+
+const bgModeSelect = document.getElementById("bgMode");
+const bgImageInput = document.getElementById("bgImageInput");
+const fileBox = document.getElementById("fileBox");
+
+let currentBgMode = "none";
+let customBgImage = null;
+
+bgModeSelect.addEventListener("change", e => {
+    currentBgMode = e.target.value;
+    fileBox.style.display = currentBgMode === "image" ? "block" : "none";
+});
+
+bgImageInput.addEventListener("change", e => {
+    const file = e.target.files[0];
+    if (!file) return;
+    const url = URL.createObjectURL(file);
+    customBgImage = new Image();
+    customBgImage.src = url;
+});
+
+/* =========================
+   AI STATE
+========================= */
+
+let isRunning = false;
+let isEarBusy = false;
+let isBodyBusy = false;
+
+let lastEarOutput = null;
+let lastBodyMask = null;
+
+let readyCount = 0;
+function checkReady() {
+    readyCount++;
+    if (readyCount === 2) {
+        document.getElementById("status").innerText = "AI Ready";
+        startCamera();
+    }
+}
+
+/* =========================
+   ONNX WORKER
+========================= */
+
+const worker = new Worker("worker.js");
+
+worker.onmessage = e => {
+    const msg = e.data;
+
+    if (msg.type === "ready") {
+        checkReady();
+    }
+    else if (msg.type === "result") {
+        lastEarOutput = msg.outputData;
+        isEarBusy = false;
+    }
+    else if (msg.type === "error") {
+        console.error(msg.message);
+    }
+};
+
+/* =========================
+   MEDIAPIPE
+========================= */
+
+const selfieSegmentation = new SelfieSegmentation({
+    locateFile: file =>
+        `https://cdn.jsdelivr.net/npm/@mediapipe/selfie_segmentation/${file}`
+});
+
+selfieSegmentation.setOptions({ modelSelection: 1 });
+
+const bodyMaskCanvas = document.createElement("canvas");
+const bodyMaskCtx = bodyMaskCanvas.getContext("2d");
+
+selfieSegmentation.onResults(results => {
+
+    bodyMaskCanvas.width = results.segmentationMask.width;
+    bodyMaskCanvas.height = results.segmentationMask.height;
+
+    bodyMaskCtx.clearRect(0,0,bodyMaskCanvas.width,bodyMaskCanvas.height);
+    bodyMaskCtx.drawImage(results.segmentationMask,0,0);
+
+    lastBodyMask = bodyMaskCanvas;
+    isBodyBusy = false;
+});
+
+checkReady();
+
+/* =========================
+   START CAMERA
+========================= */
+
+function startCamera() {
+    navigator.mediaDevices.getUserMedia({
+        video: { facingMode: "user", width: { ideal: 640 }, height: { ideal: 480 } },
+        audio: false
+    }).then(stream => {
+        video.srcObject = stream;
+        video.onloadedmetadata = () => {
+            canvas.width = video.videoWidth;
+            canvas.height = video.videoHeight;
+            isRunning = true;
+            requestAnimationFrame(renderLoop);
+        };
+    });
+}
+
+/* =========================
+   PREPROCESS (ONNX)
+========================= */
+
+function preprocess(imageData) {
+
+    const floatData = new Float32Array(3 * IMAGE_SIZE * IMAGE_SIZE);
+
+    const mean = [0.485,0.456,0.406];
+    const std = [0.229,0.224,0.225];
+
+    for (let i=0;i<IMAGE_SIZE*IMAGE_SIZE;i++) {
+
+        const r = imageData[i*4]/255;
+        const g = imageData[i*4+1]/255;
+        const b = imageData[i*4+2]/255;
+
+        floatData[i] = (r-mean[0])/std[0];
+        floatData[IMAGE_SIZE*IMAGE_SIZE+i] = (g-mean[1])/std[1];
+        floatData[2*IMAGE_SIZE*IMAGE_SIZE+i] = (b-mean[2])/std[2];
+    }
+
+    return floatData;
+}
+
+/* =========================
+   TRIGGER AIs
+========================= */
+
+function triggerAI() {
+
+    const w = video.videoWidth;
+    const h = video.videoHeight;
+
+    if (!isEarBusy) {
+        isEarBusy = true;
+
+        const minDim = Math.min(w,h);
+        const startX = (w-minDim)/2;
+        const startY = (h-minDim)/2;
+
+        pCtx.drawImage(video,startX,startY,minDim,minDim,0,0,IMAGE_SIZE,IMAGE_SIZE);
+
+        const imgData = pCtx.getImageData(0,0,IMAGE_SIZE,IMAGE_SIZE).data;
+        const tensorData = preprocess(imgData);
+
+        worker.postMessage({type:"predict",tensorData:tensorData},[tensorData.buffer]);
+    }
+
+    if (!isBodyBusy && currentBgMode !== "none") {
+        isBodyBusy = true;
+        selfieSegmentation.send({image:video});
+    }
+}
+
+/* =========================
+   DRAW EAR MASK
+========================= */
+
+function drawEarMask(data,w,h) {
+
+    const minDim = Math.min(w,h);
+    const startX = (w-minDim)/2;
+    const startY = (h-minDim)/2;
+
+    const maskCanvas = document.createElement("canvas");
+    maskCanvas.width = IMAGE_SIZE;
+    maskCanvas.height = IMAGE_SIZE;
+
+    const maskCtx = maskCanvas.getContext("2d");
+    const img = maskCtx.createImageData(IMAGE_SIZE,IMAGE_SIZE);
+    const px = img.data;
+
+    for (let i=0;i<IMAGE_SIZE*IMAGE_SIZE;i++) {
+
+        const ear = data[IMAGE_SIZE*IMAGE_SIZE+i] > data[i];
+
+        if (ear) {
+            px[i*4]=0;
+            px[i*4+1]=255;
+            px[i*4+2]=0;
+            px[i*4+3]=160;
+        }
+    }
+
+    maskCtx.putImageData(img,0,0);
+
+    ctx.drawImage(maskCanvas,-w+startX,startY,minDim,minDim);
+}
+
+/* =========================
+   MAIN LOOP
+========================= */
+
+function renderLoop() {
+
+    if (!isRunning) return;
+
+    const w = video.videoWidth;
+    const h = video.videoHeight;
+
+    ctx.save();
+    ctx.scale(-1, 1);
+
+    if (currentBgMode === "none" || !lastBodyMask) {
+        ctx.drawImage(video, -w, 0, w, h);
+    } else {
+
+        // ---------- STEP 1: Draw background ----------
+        if (currentBgMode === "blur") {
+            ctx.filter = "blur(25px)";
+            ctx.drawImage(video, -w, 0, w, h);
+            ctx.filter = "none";
+        } 
+        else if (currentBgMode === "image" && customBgImage) {
+            ctx.drawImage(customBgImage, -w, 0, w, h);
+        } 
+        else {
+            ctx.drawImage(video, -w, 0, w, h);
         }
 
-        function parseFpnOutput(data, size) {
-            const mask = new Uint8Array(size * size);
-            
-            // Channel 1 (Ear) > Channel 0 (Background)
-            for(let i=0; i<size*size; i++) {
-                mask[i] = data[size * size + i] > data[i] ? 1 : 0;
-            }
+        // ---------- STEP 2: Keep only background ----------
+        ctx.globalCompositeOperation = "destination-out";
+        ctx.drawImage(lastBodyMask, -w, 0, w, h);
 
-            const visited = new Uint8Array(size * size);
-            const blobs = [];
+        // ---------- STEP 3: Draw person ----------
+        ctx.globalCompositeOperation = "destination-over";
+        ctx.drawImage(video, -w, 0, w, h);
 
-            for(let y = 0; y < size; y++) {
-                for(let x = 0; x < size; x++) {
-                    const idx = y * size + x;
-                    if (mask[idx] === 1 && visited[idx] === 0) {
-                        const blob = bfs(mask, visited, x, y, size);
-                        // Filter out noise. At 256x256, ears will be larger than 60 pixels.
-                        if (blob.pixels.length > 60) { 
-                            blobs.push(blob);
-                        }
-                    }
-                }
-            }
+        ctx.globalCompositeOperation = "source-over";
+    }
 
-            blobs.sort((a, b) => b.pixels.length - a.pixels.length);
-            const topTwo = blobs.slice(0, 2).sort((a, b) => a.minX - b.minX);
+    if (lastEarOutput) {
+        drawEarMask(lastEarOutput, w, h);
+    }
 
-            return topTwo.map(b => {
-                const earHeight = b.maxY - b.minY;
-                const lobeTopY = b.maxY - Math.floor(earHeight * 0.20);
-                
-                let sumX = 0, count = 0;
-                b.pixels.forEach(p => {
-                    const px = p % size;
-                    const py = Math.floor(p / size);
-                    if (py >= lobeTopY) { sumX += px; count++; }
-                });
-                
-                return { 
-                    x: count > 0 ? sumX / count : (b.minX + b.maxX) / 2, 
-                    // Set the point slightly up from the absolute bottom for the piercing
-                    y: b.maxY - Math.floor(earHeight * 0.18) 
-                };
-            });
-        }
+    ctx.restore();
 
-        function bfs(mask, visited, startX, startY, size) {
-            const queue = [startY * size + startX];
-            visited[startY * size + startX] = 1;
-            const blob = { 
-                minY: startY, maxY: startY, 
-                minX: startX, maxX: startX, 
-                pixels: [] 
-            };
-            
-            let head = 0;
-            while(head < queue.length) {
-                const currIdx = queue[head++];
-                const cx = currIdx % size;
-                const cy = Math.floor(currIdx / size);
-                
-                blob.pixels.push(currIdx);
-                if (cy < blob.minY) blob.minY = cy;
-                if (cy > blob.maxY) blob.maxY = cy;
-                if (cx < blob.minX) blob.minX = cx;
-                if (cx > blob.maxX) blob.maxX = cx;
+    triggerAI();
+    requestAnimationFrame(renderLoop);
+}
 
-                [[-1,0], [1,0], [0,-1], [0,1]].forEach(([dx, dy]) => {
-                    const nx = cx + dx, ny = cy + dy;
-                    if (nx >= 0 && nx < size && ny >= 0 && ny < size) {
-                        const nIdx = ny * size + nx;
-                        if (mask[nIdx] === 1 && visited[nIdx] === 0) {
-                            visited[nIdx] = 1;
-                            queue.push(nIdx);
-                        }
-                    }
-                });
-            }
-            return blob;
-        }
-    </script>
+
+</script>
 </body>
 </html>
